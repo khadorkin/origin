@@ -15,7 +15,14 @@ if (!process.env.WEBPACK_BUILD) {
   PostgreSQLBackend = require('./backends/PostgreSQLBackend').PostgreSQLBackend
 }
 
-const limiter = new Bottleneck({ maxConcurrent: 25 })
+// Note: do not increase over 2,000 which is Alchemy's limit
+const DEFAULT_BATCH_SIZE = 2000
+
+// Note: Increasing this limit causes more cpu units usage on Alchemy
+// and may cause rate limiting.
+const MAX_CONCURRENT_REQUESTS = 25
+
+const limiter = new Bottleneck({ maxConcurrent: MAX_CONCURRENT_REQUESTS })
 limiter.on('error', err => {
   debug('Error occurred within rate limiter', err)
 })
@@ -23,14 +30,14 @@ limiter.on('failed', async (err, jobInfo) => {
   debug(`Job ${jobInfo.options.id} failed`, err)
   // Retry 3 times
   if (jobInfo.retryCount < 4) {
-    // 250ms wait for retry
+    // 1sec wait for retry
     debug('Retrying job...')
-    return 250
+    return 1000
   }
 })
 
 const getPastEvents = memoize(
-  async function(instance, fromBlock, toBlock, batchSize = 10000) {
+  async function(instance, fromBlock, toBlock, batchSize = DEFAULT_BATCH_SIZE) {
     if (
       instance.ipfsEventCache && // IPFS cache configured.
       !instance.loadedCache && // IPFS cache hasn't been loaded yet.
@@ -193,7 +200,12 @@ class EventCache {
     this.ipfsServer =
       conf.ipfsGateway || conf.ipfsServer || 'https://ipfs.originprotocol.com'
 
-    this.batchSize = conf.batchSize || 10000
+    if (conf.batchSize) {
+      this.batchSize = Math.min(conf.batchSize, DEFAULT_BATCH_SIZE)
+    } else {
+      this.batchSize = DEFAULT_BATCH_SIZE
+    }
+    debug(`Setting batch size to ${this.batchSize}`)
 
     // If config specifies a cache, it should also have cacheMaxBlock.
     if (
